@@ -9,6 +9,8 @@
 
 上游项目：[chatmail/docker](https://github.com/chatmail/docker)
 
+> Linux、macOS、Windows、Android 和 iOS/iPadOS 上的 Delta Chat 客户端安装方法，请阅读[客户端安装指南](./docs/installation.md)。Chatmail Relay 服务端安装仍以本文为准。
+
 ## 功能
 
 - 自动安装 Docker Engine 和 Docker Compose v2
@@ -42,6 +44,8 @@
 chatmail_deploy/
 ├── README.md
 ├── MOCK_INSTALL.md
+├── docs/
+│   └── installation.md
 ├── install.sh
 └── mock_install.sh
 ```
@@ -51,6 +55,7 @@ chatmail_deploy/
 | `install.sh` | 正式域名部署脚本 |
 | `mock_install.sh` | 内网 IPv4-only 测试部署脚本 |
 | `MOCK_INSTALL.md` | Mock/IP-only 完整使用文档 |
+| `docs/installation.md` | Delta Chat 客户端跨平台安装指南 |
 
 ## 前置要求
 
