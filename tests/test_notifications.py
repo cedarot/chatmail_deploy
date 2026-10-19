@@ -91,6 +91,18 @@ class ConfigurationTests(unittest.TestCase):
         self.path.write_text("previous valid configuration\n")
         self.config = configuration(self.root)
 
+    def test_existing_nginx_directory_permissions_are_repaired_without_exposing_state(self):
+        self.root.chmod(0o700)
+        (self.root / "nginx").chmod(0o750)
+        previous_umask = os.umask(0o027)
+        try:
+            nginx_dir = gateway.prepare_nginx_directory(self.root)
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(nginx_dir.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.path.read_text(), "previous valid configuration\n")
+
     def test_dns_failure_preserves_previous_file(self):
         with patch.object(gateway, "verified_addresses", side_effect=gateway.GatewayError):
             with self.assertRaises(gateway.GatewayError):
@@ -290,7 +302,7 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.base = self.root / "notification-gateway"
-        self.base.mkdir()
+        self.base.mkdir(mode=0o700)
         (self.root / "queue").mkdir()
         self.config = configuration(self.root)
         self.config["compose_files"] = []
@@ -313,6 +325,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_enable_and_disable_preserve_mail_and_native_entrypoint(self):
         writes = []
+        previous_umask = os.umask(0o027)
+        self.addCleanup(os.umask, previous_umask)
 
         def execute(config, code, *args, data=None):
             if code == gateway.DISCOVER:
@@ -326,6 +340,11 @@ class DeploymentTests(unittest.TestCase):
              patch.object(gateway, "check_image"), patch.object(gateway, "gateway_get", return_value=True), \
              patch.object(gateway, "docker_python", side_effect=execute), patch.object(gateway, "run", side_effect=self.command) as run:
             gateway.enable(self.root, self.base, self.args)
+            self.assertEqual(self.base.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((self.base / "nginx").stat().st_mode & 0o777, 0o755)
+            for name in ("nginx.conf", "upstream.inc"):
+                self.assertEqual((self.base / "nginx" / name).stat().st_mode & 0o777, 0o644)
+            self.assertEqual((self.base / "config.json").stat().st_mode & 0o777, 0o600)
             config = gateway.read_json(self.base / "config.json")
             self.assertTrue(config["enabled"])
             self.assertEqual(config["phase"], "enabled")

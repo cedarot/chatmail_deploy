@@ -55,7 +55,7 @@ sudo python3 notification_gateway.py \
 
 启用流程为：审计和兼容检查 → 加密 DNS 与严格 TLS 验证 → 备份原服务/Compose → 创建独立网关 → `nginx -t` 和端点验证 → 安装专用 metadata drop-in/启动适配器 → 重启 metadata → 启用维护单元。失败会恢复原入口并保留队列；若恢复本身失败，保留网关供人工核查，重新运行 `disable` 完成恢复。
 
-备份和状态保存在 `CHATMAIL_ROOT/notification-gateway/`，仅 root 可访问；其中只有 `nginx/` 子目录以只读目录方式挂给网关。Nginx 采用非 root、只读根文件系统、tmpfs、移除 capabilities、`no-new-privileges`、`unless-stopped`、健康检查和 10 MB × 3 日志轮转。
+备份和状态保存在 `CHATMAIL_ROOT/notification-gateway/`，外层目录权限保持 `0700`，仅 root 可访问。只有 `nginx/` 子目录以只读目录方式挂给网关；安装器显式将其设为 `0755`、Nginx 配置文件设为 `0644`，确保在 `umask 027` 下网关用户 `101:101` 仍能读取配置。Nginx 采用非 root、只读根文件系统、tmpfs、移除 capabilities、`no-new-privileges`、`unless-stopped`、健康检查和 10 MB × 3 日志轮转。
 
 ## SNI 兼容例外
 

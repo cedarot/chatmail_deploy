@@ -79,6 +79,14 @@ def save(path, value):
     atomic(path, json.dumps(value, indent=2) + "\n")
 
 
+def prepare_nginx_directory(base):
+    nginx_dir = base / "nginx"
+    nginx_dir.mkdir(mode=0o755, exist_ok=True)
+    # The installer uses umask 027; UID/GID 101:101 must traverse this bind mount.
+    nginx_dir.chmod(0o755)
+    return nginx_dir
+
+
 def ca_bundle():
     for candidate in (ssl.get_default_verify_paths().cafile,
                       "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"):
@@ -520,8 +528,7 @@ def enable(root, base, args):
         source = HERE / name
         if source.resolve() != (base / name).resolve():
             atomic(base / name, source.read_text())
-    nginx_dir = base / "nginx"
-    nginx_dir.mkdir(mode=0o755, exist_ok=True)
+    nginx_dir = prepare_nginx_directory(base)
     template_path = HERE / "config/notification-nginx.conf"
     if not template_path.exists():
         template_path = HERE / "notification-nginx.conf.template"
