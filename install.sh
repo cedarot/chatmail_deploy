@@ -6,6 +6,7 @@ set -Eeuo pipefail
 umask 027
 
 PROGRAM=${0##*/}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 DEFAULT_INSTALL_DIR=/srv/chatmail-relay
 DEFAULT_IMAGE=ghcr.m.daocloud.io/chatmail/docker:main
 COMPOSE_URL=https://raw.githubusercontent.com/chatmail/docker/main/docker-compose.yaml
@@ -22,6 +23,9 @@ DISABLE_IPV6=${DISABLE_IPV6:-false}
 START_SERVICES=${START_SERVICES:-true}
 EXTRACT_CONFIGS=${EXTRACT_CONFIGS:-true}
 USE_DAOCLOUD=${USE_DAOCLOUD:-true}
+NOTIFICATION_GATEWAY=${NOTIFICATION_GATEWAY:-false}
+NOTIFICATION_SNI_WORKAROUND=${NOTIFICATION_SNI_WORKAROUND:-false}
+NOTIFICATION_GATEWAY_IMAGE=${NOTIFICATION_GATEWAY_IMAGE:-}
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -47,6 +51,12 @@ Other options:
       --disable-ipv6        Configure Chatmail without IPv6
       --no-start            Prepare files and pull the image without starting
       --no-extract          Do not extract generated config files after startup
+      --notification-gateway
+                            Enable the optional loopback iOS notification gateway
+      --notification-gateway-image IMAGE
+                            Nginx gateway image (pinned to its pulled digest)
+      --notification-sni-workaround
+                            Allow no-SNI ONLY if same-IP TLS comparisons prove it
   -h, --help                Show this help
 
 Environment variables with the same names are also accepted, for example:
@@ -72,6 +82,9 @@ while (($#)); do
     --disable-ipv6) DISABLE_IPV6=true; shift ;;
     --no-start) START_SERVICES=false; shift ;;
     --no-extract) EXTRACT_CONFIGS=false; shift ;;
+    --notification-gateway) NOTIFICATION_GATEWAY=true; shift ;;
+    --notification-gateway-image) NOTIFICATION_GATEWAY_IMAGE=${2:?missing value for $1}; shift 2 ;;
+    --notification-sni-workaround) NOTIFICATION_SNI_WORKAROUND=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -83,9 +96,12 @@ done
 [[ $MAIL_DOMAIN == *.* ]] || die "MAIL_DOMAIN must be a fully qualified domain"
 MAIL_DOMAIN=${MAIL_DOMAIN,,}
 
-for bool_value in "$DISABLE_IPV6" "$START_SERVICES" "$EXTRACT_CONFIGS" "$USE_DAOCLOUD"; do
+for bool_value in "$DISABLE_IPV6" "$START_SERVICES" "$EXTRACT_CONFIGS" "$USE_DAOCLOUD" "$NOTIFICATION_GATEWAY" "$NOTIFICATION_SNI_WORKAROUND"; do
   [[ $bool_value == true || $bool_value == false ]] || die "boolean values must be true or false"
 done
+if [[ $NOTIFICATION_SNI_WORKAROUND == true && $NOTIFICATION_GATEWAY != true ]]; then
+  die "--notification-sni-workaround requires --notification-gateway"
+fi
 
 if [[ -n $CERT_ZIP && ( -n $CERT_FILE || -n $KEY_FILE ) ]]; then
   die "use either --cert-zip or --cert/--key, not both"
@@ -176,6 +192,36 @@ ensure_tools() {
     done
     ((${#missing[@]} == 0)) || die "required commands are still missing: ${missing[*]}"
   fi
+}
+
+ensure_notification_tools() {
+  [[ $NOTIFICATION_GATEWAY == true ]] || return 0
+  [[ -r $SCRIPT_DIR/notification_gateway.py && -r $SCRIPT_DIR/notification_metadata.py && -r $SCRIPT_DIR/config/notification-nginx.conf ]] ||
+    die "notification gateway files are missing; use a complete checkout of this repository"
+  if ! command -v python3 >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get install -y python3
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y python3
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y python3
+    else
+      die "the optional notification gateway requires Python 3.9+"
+    fi
+  fi
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "notification gateway requires Python 3.9+"
+}
+
+enable_notification_gateway() {
+  [[ $NOTIFICATION_GATEWAY == true ]] || return 0
+  local gateway_image=$NOTIFICATION_GATEWAY_IMAGE
+  if [[ -z $gateway_image ]]; then
+    gateway_image=nginx:stable-alpine
+    [[ $USE_DAOCLOUD != true ]] || gateway_image=docker.m.daocloud.io/library/nginx:stable-alpine
+  fi
+  local -a gateway_args=(--root "$INSTALL_DIR" --gateway-image "$gateway_image")
+  [[ $NOTIFICATION_SNI_WORKAROUND != true ]] || gateway_args+=(--allow-sni-workaround)
+  python3 "$SCRIPT_DIR/notification_gateway.py" "${gateway_args[@]}" enable
 }
 
 configure_docker_daocloud() {
@@ -312,6 +358,9 @@ write_env() {
     printf 'USE_DAOCLOUD=%q\n' "$USE_DAOCLOUD"
     printf 'DAOCLOUD_REGISTRY_MIRROR=%q\n' "$DAOCLOUD_REGISTRY_MIRROR"
     printf 'TLS_MODE=%q\n' "$TLS_MODE"
+    printf 'NOTIFICATION_GATEWAY=%q\n' "$NOTIFICATION_GATEWAY"
+    printf 'NOTIFICATION_SNI_WORKAROUND=%q\n' "$NOTIFICATION_SNI_WORKAROUND"
+    printf 'NOTIFICATION_GATEWAY_IMAGE=%q\n' "$NOTIFICATION_GATEWAY_IMAGE"
     printf 'CERTIFICATE_HOST_PATH=%q\n' "$INSTALL_DIR/data/certs/external/fullchain.pem"
     printf 'PRIVATE_KEY_HOST_PATH=%q\n' "$INSTALL_DIR/data/certs/external/privkey.pem"
     printf 'CERTIFICATE_CONTAINER_PATH=%q\n' /var/lib/acme/external/fullchain.pem
@@ -361,8 +410,12 @@ extract_configs() {
 }
 
 main() {
+  if [[ $NOTIFICATION_GATEWAY == true && ( -e $INSTALL_DIR/docker-compose.yaml || -e $INSTALL_DIR/compose.yaml || -e $INSTALL_DIR/compose.yml || -e $INSTALL_DIR/docker-compose.yml ) ]]; then
+    die "an existing Compose deployment was found; use notification_gateway.py --root DIR enable (docs/notifications.md)"
+  fi
   install_docker
   ensure_tools
+  ensure_notification_tools
   configure_docker_daocloud
   configure_kernel
   check_ports
@@ -389,6 +442,9 @@ main() {
 
   if [[ $START_SERVICES == false ]]; then
     log "Preparation complete; start later with: cd $INSTALL_DIR && docker compose up -d --no-build"
+    if [[ $NOTIFICATION_GATEWAY == true ]]; then
+      log "Gateway deferred: after Chatmail starts, run python3 $SCRIPT_DIR/notification_gateway.py --root $INSTALL_DIR enable (see docs/notifications.md for options)"
+    fi
     return
   fi
 
@@ -397,6 +453,7 @@ main() {
   if [[ $EXTRACT_CONFIGS == true ]]; then
     extract_configs
   fi
+  enable_notification_gateway
 
   cat <<EOF
 

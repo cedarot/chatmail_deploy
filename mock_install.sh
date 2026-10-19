@@ -16,6 +16,9 @@ USE_DAOCLOUD=${USE_DAOCLOUD:-true}
 START_SERVICES=${START_SERVICES:-true}
 EXTRACT_CONFIGS=${EXTRACT_CONFIGS:-true}
 ALLOW_PUBLIC_IP=false
+NOTIFICATION_GATEWAY=${NOTIFICATION_GATEWAY:-false}
+NOTIFICATION_SNI_WORKAROUND=${NOTIFICATION_SNI_WORKAROUND:-false}
+NOTIFICATION_GATEWAY_IMAGE=${NOTIFICATION_GATEWAY_IMAGE:-}
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -36,6 +39,12 @@ Options:
       --no-start            Prepare and pull without starting Chatmail
       --no-extract          Do not save the generated nginx configuration
       --allow-public-ip     Permit a public IPv4 address in mock/IP-only mode
+      --notification-gateway
+                            Enable the optional notification gateway (internet required)
+      --notification-gateway-image IMAGE
+                            Override the Nginx gateway image
+      --notification-sni-workaround
+                            Permit a proved same-IP SNI compatibility exception
   -h, --help                Show this help
 
 Examples:
@@ -91,6 +100,9 @@ while (($#)); do
     --no-start) START_SERVICES=false; shift ;;
     --no-extract) EXTRACT_CONFIGS=false; shift ;;
     --allow-public-ip) ALLOW_PUBLIC_IP=true; shift ;;
+    --notification-gateway) NOTIFICATION_GATEWAY=true; shift ;;
+    --notification-gateway-image) NOTIFICATION_GATEWAY_IMAGE=${2:?missing value for $1}; shift 2 ;;
+    --notification-sni-workaround) NOTIFICATION_SNI_WORKAROUND=true; shift ;;
     --domain|--cert|--key|--cert-zip|--acme-email)
       die "$1 is not supported in mock/IP-only mode"
       ;;
@@ -119,6 +131,9 @@ installer_args=(
 [[ $USE_DAOCLOUD == true ]] || installer_args+=(--no-daocloud)
 [[ $START_SERVICES == true ]] || installer_args+=(--no-start)
 [[ $EXTRACT_CONFIGS == true ]] || installer_args+=(--no-extract)
+[[ $NOTIFICATION_GATEWAY != true ]] || installer_args+=(--notification-gateway)
+[[ $NOTIFICATION_SNI_WORKAROUND != true ]] || installer_args+=(--notification-sni-workaround)
+[[ -z $NOTIFICATION_GATEWAY_IMAGE ]] || installer_args+=(--notification-gateway-image "$NOTIFICATION_GATEWAY_IMAGE")
 
 cat <<EOF
 Starting experimental Chatmail IP-only deployment:

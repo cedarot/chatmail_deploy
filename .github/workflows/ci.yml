@@ -1,0 +1,54 @@
+name: Verify deployment scripts
+on:
+  push:
+    branches: [main, 'issue/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: bash -n install.sh mock_install.sh
+      - run: python -m unittest discover -s tests -v
+      - run: python notification_gateway.py --help
+      - run: ./install.sh --help && ./mock_install.sh --help
+      - run: git diff --check
+      - name: Validate and start the non-root gateway under umask 027
+        if: matrix.python == '3.14'
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import notification_gateway as gateway
+          os.umask(0o027)
+          base = Path(os.environ['RUNNER_TEMP']) / 'chatmail-notification-config'
+          base.mkdir(mode=0o700)
+          nginx_dir = gateway.prepare_nginx_directory(base)
+          config = {'unit': 'chatmail-notification-ci', 'gateway': 'chatmail-notification-ci',
+                    'ca': gateway.ca_bundle(), 'port': 10089}
+          template = Path('config/notification-nginx.conf').read_text()
+          gateway.atomic(nginx_dir / 'nginx.conf', template.replace('@@PORT@@', '10089').replace('@@SNI@@', 'on'), 0o644)
+          gateway.atomic(nginx_dir / 'upstream.inc', 'server 1.1.1.1:443;\n', 0o644)
+          gateway.atomic(base / 'compose.json', json.dumps(gateway.gateway_compose(base, config, 'nginx:stable-alpine')))
+          assert base.stat().st_mode & 0o777 == 0o700
+          assert nginx_dir.stat().st_mode & 0o777 == 0o755
+          assert (base / 'compose.json').stat().st_mode & 0o777 == 0o600
+          PY
+          docker compose -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" run --rm --no-deps gateway -t -c /etc/chatmail-notify/nginx.conf
+          docker compose -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" up -d --wait --wait-timeout 45
+          docker compose -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" exec -T gateway sh -c 'test "$(id -u):$(id -g)" = "101:101"'
+          curl --fail --silent --show-error --max-time 3 http://127.0.0.1:10089/healthz
+      - name: Remove the CI gateway
+        if: always() && matrix.python == '3.14'
+        run: |
+          if [ -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" ]; then
+            docker compose -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" down
+          fi
