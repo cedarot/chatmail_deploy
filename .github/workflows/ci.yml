@@ -1,0 +1,40 @@
+name: Verify deployment scripts
+on:
+  push:
+    branches: [main, 'issue/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: bash -n install.sh mock_install.sh
+      - run: python -m unittest discover -s tests -v
+      - run: python notification_gateway.py --help
+      - run: ./install.sh --help && ./mock_install.sh --help
+      - run: git diff --check
+      - name: Validate the hardened Nginx container configuration
+        if: matrix.python == '3.14'
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import notification_gateway as gateway
+          base = Path(os.environ['RUNNER_TEMP']) / 'chatmail-notification-config'
+          (base / 'nginx').mkdir(parents=True, mode=0o755)
+          config = {'unit': 'chatmail-notification-ci', 'gateway': 'chatmail-notification-ci',
+                    'ca': gateway.ca_bundle(), 'port': 10089}
+          template = Path('config/notification-nginx.conf').read_text()
+          (base / 'nginx/nginx.conf').write_text(template.replace('@@PORT@@', '10089').replace('@@SNI@@', 'on'))
+          (base / 'nginx/upstream.inc').write_text('server 1.1.1.1:443;\n')
+          (base / 'compose.json').write_text(json.dumps(gateway.gateway_compose(base, config, 'nginx:stable-alpine')))
+          PY
+          docker compose -f "$RUNNER_TEMP/chatmail-notification-config/compose.json" run --rm --no-deps gateway -t -c /etc/chatmail-notify/nginx.conf

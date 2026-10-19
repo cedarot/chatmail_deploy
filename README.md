@@ -24,6 +24,9 @@
 - 支持无域名、无 DNS、无证书的 IPv4-only 测试部署
 - 检查常用端口占用和容器健康状态
 - 抽取生成后的 nginx 配置供维护和排障
+- 可选本机通知网关：支持 iOS 后台/锁屏收信通知的服务器出口优化、加密 DNS 刷新和队列健康检查
+
+网关用于 `chatmail-metadata → 官方通知服务 → APNs → iPhone 唤醒并经 IMAP 收信`。它不承诺手机断网期间收到推送，也不承诺固定的 iOS 到达秒数。详细部署、已有服务器启用、验证和回滚见 [iOS 通知与网关部署](./docs/notifications.md)。
 
 ## 支持的操作系统
 
@@ -45,7 +48,12 @@ chatmail_deploy/
 ├── README.md
 ├── MOCK_INSTALL.md
 ├── docs/
-│   └── installation.md
+│   ├── installation.md
+│   └── notifications.md
+├── config/notification-nginx.conf
+├── notification_gateway.py
+├── notification_metadata.py
+├── tests/
 ├── install.sh
 └── mock_install.sh
 ```
@@ -56,6 +64,9 @@ chatmail_deploy/
 | `mock_install.sh` | 内网 IPv4-only 测试部署脚本 |
 | `MOCK_INSTALL.md` | Mock/IP-only 完整使用文档 |
 | `docs/installation.md` | Delta Chat 客户端跨平台安装指南 |
+| `docs/notifications.md` | iOS 后台/锁屏通知、网关部署与诊断 |
+| `notification_gateway.py` | 已有部署审计、启用/停用网关、地址刷新和健康检查 |
+| `notification_metadata.py` | 使用当前安装包的 metadata 启动适配器，不覆盖整份模块 |
 
 ## 前置要求
 
@@ -129,6 +140,21 @@ sudo ./install.sh \
   --acme-email admin@example.org
 ```
 
+### 新装时启用 iOS 通知网关
+
+网关默认关闭。需要优化通知出口时，在完整仓库目录中显式启用：
+
+```bash
+sudo ./install.sh \
+  --domain chat.example.org \
+  --cert-zip /tmp/example_nginx.zip \
+  --notification-gateway
+```
+
+依赖 Python 3.9+、systemd、Docker Compose、curl、OpenSSL 和系统 CA。网关只监听 `127.0.0.1:10089`，不需要开放公网端口；默认开启 SNI 并严格验证官方证书。`--notification-sni-workaround` 仅允许脚本执行严格的同 IP 对照测试，证明必要后才关闭 SNI，不会关闭证书验证。
+
+已有安装请使用[独立启用命令](./docs/notifications.md#已有部署)，不要重跑全量安装器。`--no-start` 会延后网关启用，主服务手动启动后再运行独立命令。
+
 ### 正式部署常用参数
 
 ```text
@@ -143,6 +169,12 @@ sudo ./install.sh \
 --no-daocloud         禁用 DaoCloud 加速
 --no-start            只准备文件和镜像，不启动服务
 --no-extract          不抽取生成后的 nginx 配置
+--notification-gateway
+                     启用可选通知网关和维护 timer；默认关闭
+--notification-gateway-image IMAGE
+                     指定 Nginx 镜像，拉取后固定实际 digest
+--notification-sni-workaround
+                     仅在同 IP 对照证明必要时允许关闭上游 SNI
 ```
 
 查看实时帮助：
@@ -276,6 +308,8 @@ curl -kI https://192.168.10.20/
 
 ## 更新
 
+已启用通知网关时，先按[网关更新步骤](./docs/notifications.md#更新与回滚)停用适配器并备份，再更新主镜像；镜像改变后需要重新审计并启用。下面的普通更新命令适用于未启用网关的部署。已有容器内非持久化的 Postfix spool 需先处理在途投递，避免重建丢失任务。
+
 ```bash
 cd /srv/chatmail-relay
 sudo docker compose pull
@@ -299,6 +333,17 @@ config/chatmail.ini
 - 正式公网部署应使用有效域名和公共 CA 证书。
 - Chatmail 容器使用 host 网络以及 systemd 所需的宿主机权限，建议部署在专用服务器上。
 - 执行脚本前请确认端口没有被现有邮件、Web 或 DNS 服务占用。
+- 通知网关不会清空 `pending_notifications`，日志不输出设备令牌、通知正文、密码或邮件内容。维护前应停用本组件 timer，恢复后重新启用。
+
+## 开发验证
+
+```bash
+bash -n install.sh mock_install.sh
+python3 -m unittest discover -s tests -v
+git diff --check
+```
+
+测试使用临时目录和隔离的命令/网络响应，覆盖通知出口验证、失败回滚、启用/停用、日志脱敏和恢复冷却；不能替代真实部署和 iPhone 锁屏测试。
 
 ## 参考资料
 
